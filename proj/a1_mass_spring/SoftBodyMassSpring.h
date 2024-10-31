@@ -103,12 +103,30 @@ public:
 	{
 		/* Your implementation start */
 
+		const int n_parts = particles.Size();
+
+		for (int i = 0; i < n_parts; ++i)
+		{
+			particles.F(i) += g * particles.M(i);
+		}
+
 		/* Your implementation end */	
 	}
 
 	void Apply_Spring_Force(const double dt)
 	{
 		/* Your implementation start */
+
+		const int n_springs = static_cast<int>(springs.size());
+
+		for (int i = 0; i < n_springs; ++i)
+		{
+			const auto& is = springs[i];
+			const Vector3 sf = Spring_Force(i);
+
+			particles.F(is[0]) += sf;
+			particles.F(is[1]) -= sf;
+		}
 
 		/* Your implementation end */	
 	}
@@ -117,12 +135,25 @@ public:
 	{
 		/* Your implementation start */
 
+		for (const auto& kvp : boundary_nodes)
+		{
+			particles.F(kvp.first) = kvp.second;
+		}
+
 		/* Your implementation end */	
 	}
 
 	void Time_Integration(const double dt)
 	{
 		/* Your implementation start */
+
+		const int n_parts = particles.Size();
+
+		for (int i = 0; i < n_parts; ++i)
+		{
+			particles.V(i) += particles.F(i) * (dt / particles.M(i));
+			particles.X(i) += particles.V(i) * dt;
+		}
 
 		/* Your implementation end */		
 	}
@@ -134,9 +165,21 @@ public:
 		
 		/* Your implementation start */
 
+		const auto& is = springs[spring_index];
+
+		const Vector3 dx = particles.X(is[1]) - particles.X(is[0]);
+		const double dxn = dx.norm();
+		const Vector3 norm = dx / dxn;
+		
+		const double fs = ks[spring_index] * (dxn - rest_length[spring_index]);
+
+		const Vector3 dv = particles.V(is[1]) - particles.V(is[0]);
+
+		const double fd = kd[spring_index] * dv.dot(norm);
+
 		/* Your implementation end */
 
-		return Vector3::Zero();	////REPLACE this line with your own implementation
+		return norm * (fs + fd);
 	}
 
 	//////////////////////////////////////////////////////////////////////////
