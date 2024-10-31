@@ -20,6 +20,7 @@
 #ifdef USE_STB
 #include "StbImage.h"
 #endif
+
 #include "OpenGLObject.h"
 #include "OpenGLBufferObjects.h"
 #include "OpenGLViewer.h"
@@ -152,6 +153,8 @@ void OpenGLWindow::Initialize_Window()
 	glutInitWindowSize(win_w,win_h);
 	window_id=glutCreateWindow(window_title.c_str());
 
+    last_frame = std::chrono::high_resolution_clock::now();
+
 	glutSetWindow(window_id);
 	glutIdleFunc(Idle_Func_Glut);
 	glutTimerFunc(time_per_frame,Timer_Func_Glut,1);
@@ -188,6 +191,19 @@ void OpenGLWindow::Initialize_OpenGL()
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 void OpenGLWindow::Display()
 {
+    auto curr_frame = std::chrono::high_resolution_clock::now();
+
+    auto frame_micros = std::chrono::duration_cast<std::chrono::microseconds>(curr_frame - last_frame).count();
+    auto inst_fps = 1e6 / static_cast<double>(frame_micros);
+
+    fps = fps * 0.99 + inst_fps * 0.01;
+
+    std::string full_title = window_title + " " + std::to_string(fps) + "FPS";
+
+    glutSetWindowTitle(full_title.c_str());
+
+    last_frame = curr_frame;
+
 	Update_Camera();
 	Preprocess();
 	Clear_Buffers();

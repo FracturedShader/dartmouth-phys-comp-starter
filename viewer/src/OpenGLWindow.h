@@ -5,6 +5,7 @@
 //#####################################################################
 #ifndef __OpenGLWorld_h__
 #define __OpenGLWorld_h__
+#include <chrono>
 #include <iomanip>
 #include <map>
 #include <functional>
@@ -26,6 +27,8 @@ public:
 	std::string window_title="Dartmouth CS 89.18/189 Physical Computing, 2022 Winter";
 	int win_w=1280,win_h=960;
 	float fovy=30.f;
+	std::chrono::high_resolution_clock::time_point last_frame;
+	double fps = 100.0;
 
 	//// Offscreen rendering
 	bool display_offscreen=false;

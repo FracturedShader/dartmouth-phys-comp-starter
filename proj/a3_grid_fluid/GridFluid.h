@@ -6,6 +6,7 @@
 #define __GridFluid_h__
 #include "Common.h"
 #include "Grid.h"
+#include "OpenGLBufferObjects.h"
 #include "Particles.h"
   
 //////////////////////////////////////////////////////////////////////////
@@ -24,7 +25,7 @@ public:
 	//// source-related variables
 	Vector2 src_pos=Vector2::Ones()*(double).5;				//// source position
 	Vector2 src_vel=Vector2::Unit(0)*(double)1.5;			//// source velocity
-	double src_radius=(double).1;							//// source radius
+	double src_radius=(double).025;							//// source radius
 
 	//// grid-related variables
 	int node_num=0;											//// total number of grid nodes
@@ -86,22 +87,22 @@ public:
 	}
 
 	//// Interpolation for scalars with a clamped position. This function calls the bi-linear interpolation function you will implement.
-	double Interpolate(const std::vector<double>& u,Vector2& pos)
+	double Interpolate(const std::vector<double>& u,const Vector2& pos)
 	{
 		Vector2i cell;
 		Vector2 frac;
-		pos=Clamp_Pos(pos);
-		Calculate_Cell_Index_And_Position(pos,cell,frac);
+		Vector2 clamped_pos=Clamp_Pos(pos);
+		Calculate_Cell_Index_And_Position(clamped_pos,cell,frac);
 		return Bilinear_Interpolation(cell,frac,u);
 	}
 
 	//// Interpolation for vectors with a clamped position. This function calls the bi-linear interpolation function you will implement.
-	Vector2 Interpolate(const std::vector<Vector2>& u,Vector2& pos)
+	Vector2 Interpolate(const std::vector<Vector2>& u,const Vector2& pos)
 	{
 		Vector2i cell;
 		Vector2 frac;
-		pos=Clamp_Pos(pos);
-		Calculate_Cell_Index_And_Position(pos,cell,frac);
+		Vector2 clamped_pos=Clamp_Pos(pos);
+		Calculate_Cell_Index_And_Position(clamped_pos,cell,frac);
 		return Bilinear_Interpolation(cell,frac,u);
 	}
 
@@ -111,7 +112,15 @@ public:
 	double Bilinear_Interpolation(const Vector2i& cell,const Vector2& frac,const std::vector<double>& u)
 	{
 		/*Your implementation ends*/
-		return 0.;		//// replace this line with your implementation
+		const double u00 = u[Idx(cell)];
+		const double u10 = u[Idx(cell + Vector2i::UnitX())];
+		const double u01 = u[Idx(cell + Vector2i::UnitY())];
+		const double u11 = u[Idx(cell + Vector2i::Ones())];
+
+		const double ux0 = u00 * (1 - frac[0]) + u10 * frac[0];
+		const double ux1 = u01 * (1 - frac[0]) + u11 * frac[0];
+
+		return ux0 * (1 - frac[1]) + ux1 * frac[1];		//// replace this line with your implementation
 		/*Your implementation ends*/
 	}
 
@@ -119,14 +128,22 @@ public:
 	Vector2 Bilinear_Interpolation(const Vector2i& cell,const Vector2& frac,const std::vector<Vector2>& u)
 	{
 		/*Your implementation starts*/
-		return Vector2::Zero();		//// replace this line with your implementation
+		const Vector2& u00 = u[Idx(cell)];
+		const Vector2& u10 = u[Idx(cell + Vector2i::UnitX())];
+		const Vector2& u01 = u[Idx(cell + Vector2i::UnitY())];
+		const Vector2& u11 = u[Idx(cell + Vector2i::Ones())];
+
+		const Vector2 ux0 = u00 * (1 - frac[0]) + u10 * frac[0];
+		const Vector2 ux1 = u01 * (1 - frac[0]) + u11 * frac[0];
+
+		return ux0 * (1 - frac[1]) + ux1 * frac[1];		//// replace this line with your implementation
 		/*Your implementation ends*/
 	}
 
 	//// initialize the grid and fields
 	virtual void Initialize()
 	{
-		int n=64;								//// Attention: change this variable to change the grid resolution!
+		int n=128;								//// Attention: change this variable to change the grid resolution!
 		Vector2i cell_counts=Vector2i(n,n/2);
 		double dx=(double)2./(double)n;
 		Vector2 domain_min=Vector2::Zero();
@@ -157,9 +174,17 @@ public:
 	//// Hint: You need to use the source-related variables declared at the beginning of the class
 	void Source()
 	{
+		const double src_rad_sq = src_radius * src_radius;
+
 		for(int i=0;i<node_num;i++){
 			/*Your implementation starts*/
+			if(Bnd(i))continue;		////ignore the nodes on the boundary
 
+			if ((Pos(i) - src_pos).squaredNorm() < src_rad_sq)
+			{
+				u[i] = src_vel;
+				smoke_den[i] = 1;
+			}
 			/*Your implementation ends*/
 		}
 	}
@@ -178,7 +203,12 @@ public:
 			smoke_den[i]=0.;
 
 			/*Your implementation starts*/
+			const Vector2 node_coord = grid.Node(i);
+			const Vector2 u_half = Interpolate(u_copy, node_coord - u_copy[i] * (dt / 2));
+			const Vector2 source_pos = node_coord - u_half * dt;
 
+			u[i] = Interpolate(u_copy, source_pos);
+			smoke_den[i] = Interpolate(den_copy, source_pos);
 			/*Your implementation ends*/
 		}
 	}
@@ -192,6 +222,7 @@ public:
 
 		//// (Sample) Projection step 1: calculate the velocity divergence on each node
 		//// Read this sample code to learn how to access data with the node index and coordinate
+		double denom = 2 * dx;
 		std::fill(div_u.begin(),div_u.end(),(double)0);
 		for(int i=0;i<node_num;i++){
 			if(Bnd(i))continue;		////ignore the nodes on the boundary
@@ -199,12 +230,13 @@ public:
 			div_u[i]=(double)0;
 
 			for(int j=0;j<2;j++){
-				Vector2 u_1=u[Idx(node-Vector2i::Unit(j))];
-				Vector2 u_2=u[Idx(node+Vector2i::Unit(j))];
-				div_u[i]+=(u_2[j]-u_1[j])/(2*dx);}
+				const Vector2 u_1=u[Idx(node-Vector2i::Unit(j))];
+				const Vector2 u_2=u[Idx(node+Vector2i::Unit(j))];
+				div_u[i]+=(u_2[j]-u_1[j])/denom;}
 		}
 
 		//// TASK 4.1: Projection step 2: solve the Poisson's equation -lap p= div u using the Gauss-Seidel iterations
+		denom = 4 / dx2;
 		std::fill(p.begin(),p.end(),(double)0);
 		for(int iter=0;iter<40;iter++){
 			for(int i=0;i<node_num;i++){
@@ -212,19 +244,31 @@ public:
 				Vector2i node=Coord(i);
 
 				/*Your implementation starts*/
-
+				double p_sum = 0;
+				for(int j=0;j<2;j++){
+					const double p_1=p[Idx(node-Vector2i::Unit(j))];
+					const double p_2=p[Idx(node+Vector2i::Unit(j))];
+					p_sum += p_1 + p_2;}
+				//p[i] = (-div_u[i] + p_sum / dx2) / denom;
+				p[i] = (-div_u[i] * dx2 + p_sum) / 4;
 				/*Your implementation ends*/
 			}
 		}
 		
 		//// TASK 4.2: Projection step 3: correct velocity with the pressure gradient
+		denom = 2 * dx;
 		for(int i=0;i<node_num;i++){
 			if(Bnd(i))continue;		////ignore boundary nodes
 			Vector2i node=Coord(i);
 			Vector2 grad_p=Vector2::Zero();
 
 			/*Your implementation starts*/
+			for(int j=0;j<2;j++){
+				const double p_1=p[Idx(node-Vector2i::Unit(j))];
+				const double p_2=p[Idx(node+Vector2i::Unit(j))];
+				grad_p[j]+=(p_2-p_1)/denom;}
 
+			u[i] -= grad_p;
 			/*Your implementation ends*/
 		}
 	}
@@ -236,6 +280,7 @@ public:
 		double dx=grid.dx;
 
 		////TASK 5.1: update vorticity
+		const double denom = 2 * dx;
 		std::fill(vor.begin(),vor.end(),(double)0);
 		for(int i=0;i<node_num;i++){
 			if(Bnd(i))continue;		////ignore boundary nodes
@@ -243,7 +288,11 @@ public:
 			vor[i]=(double)0;
 
 			/*Your implementation starts*/
-
+			for(int j=0;j<2;j++){
+				const Vector2 u_1=u[Idx(node-Vector2i::Unit(j))];
+				const Vector2 u_2=u[Idx(node+Vector2i::Unit(j))];
+				const int jn = (j + 1) % 2;
+				vor[i]+=(u_2[jn]-u_1[jn])/denom;}
 			/*Your implementation ends*/
 		}
 
@@ -255,7 +304,14 @@ public:
 			N[i]=Vector2::Zero();
 
 			/*Your implementation starts*/
+			Vector2 grad_vor = Vector2::Zero();
 
+			for(int j=0;j<2;j++){
+				const double mv_1=vor[Idx(node-Vector2i::Unit(j))];
+				const double mv_2=vor[Idx(node+Vector2i::Unit(j))];
+				grad_vor[j]+=(mv_2-mv_1)/denom;}
+
+			N[i] = grad_vor.normalized();
 			/*Your implementation ends*/
 		}
 

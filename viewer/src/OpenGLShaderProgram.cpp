@@ -140,6 +140,22 @@ void main()
 }														
 );
 
+const std::string vcolor_tex_vtx_shader=To_String(
+~include version;
+~include camera;
+layout (location=0) in vec4 pos;
+layout (location=1) in vec4 v_color;
+layout (location=2) in vec2 v_uv;
+out vec4 vtx_color;
+out vec2 vtx_uv;
+void main()												
+{
+	gl_Position=pvm*vec4(pos.xyz,1.f);
+	vtx_color=v_color;
+	vtx_uv = v_uv;
+}														
+);
+
 const std::string vclip_vfpos_vtx_shader=To_String(
 ~include version;
 layout (location=0) in vec4 pos;
@@ -165,6 +181,25 @@ void main()
 	gl_Position=pvm*vec4(pos.xyz,1.f);
 	vtx_normal=vec3(normal);
 	vtx_frg_pos=vec3(model*vec4(pos.xyz,1.f));
+}
+);
+
+const std::string vnormal_vfpos_tex_vtx_shader=To_String(
+~include version;
+~include camera;
+uniform mat4 model=mat4(1.0f);
+layout (location=0) in vec4 pos;
+layout (location=1) in vec4 normal;
+layout (location=2) in vec2 v_uv;
+out vec3 vtx_normal;
+out vec3 vtx_frg_pos;
+out vec2 vtx_uv;
+void main()												
+{
+	gl_Position=pvm*vec4(pos.xyz,1.f);
+	vtx_normal=vec3(normal);
+	vtx_frg_pos=vec3(model*vec4(pos.xyz,1.f));
+	vtx_uv = v_uv;
 }
 );
 
@@ -248,6 +283,30 @@ void main()
 }										
 );
 
+const std::string vcolor_tex_frg_shader=To_String(
+~include version;
+uniform sampler2D main_tex;
+in vec4 vtx_color;
+in vec2 vtx_uv;
+out vec4 frag_color;
+void main()								
+{										
+    frag_color=vtx_color*texture(main_tex,vtx_uv);
+}										
+);
+
+const std::string u_tex_frg_shader=To_String(
+~include version;
+uniform sampler2D main_tex;
+in vec4 vtx_color;
+in vec2 vtx_uv;
+out vec4 frag_color;
+void main()								
+{										
+    frag_color=vtx_color*vec4(texture(main_tex,vtx_uv).zzz,1);
+}										
+);
+
 const std::string vnormal_vfpos_lt_frg_shader=To_String(
 ~include version;
 ~include material;
@@ -273,7 +332,34 @@ void main()
 	frag_color=vec4(color,1.f);
 }
 );
+
+const std::string vnormal_vfpos_lt_tex_frg_shader=To_String(
+~include version;
+~include material;
+~include camera;
+~include lights;
+uniform sampler2D main_tex;
+in vec3 vtx_normal;
+in vec3 vtx_frg_pos;
+in vec2 vtx_uv;
+out vec4 frag_color;
+~include phong_dl_func;
+~include phong_pl_func;
+~include phong_sl_func;
+void main()
+{
+    vec3 normal=normalize(vtx_normal);
+	vec3 color=mat_amb.rgb*amb.rgb;
+	for(int i=0;i<lt_att[0];i++){
+		vec3 c0=vec3(0.f);
+		switch(lt[i].att[0]){
+		case 0:{c0=phong_dl(i,normal);}break;
+		case 1:{c0=phong_pl(i,vtx_frg_pos,normal);}break;
+		case 2:{c0=phong_sl(i,vtx_frg_pos,normal);}break;}
+		color+=c0;}
+	frag_color=vec4(color, 1.f)*texture(main_tex,vtx_uv);
 }
+);
 
 const std::string vnormal_vfpos_dl_fast_frg_shader=To_String(
 ~include version;
@@ -290,6 +376,239 @@ void main()
 	frag_color=vec4(color,1.f);
 }
 );
+
+//////////////////////////////////////////////////////////////////////////
+////GridFluid shaders
+const std::string vuv_vtx_shader = To_String(
+~include version;
+layout (location=0) in vec4 pos;
+
+out vec2 vtx_uv;
+
+void main()
+{
+	gl_Position = vec4(pos.xy * vec2(2.0f) - vec2(1.0f), 0.0f, 1.0f);
+	vtx_uv = pos.xy;
+}
+);
+
+const std::string zero_tex_frg_shader = To_String(
+~include version;
+
+out vec4 frag_color;
+
+void main()
+{
+	frag_color = vec4(0);
+}
+);
+
+const std::string one_tex_frg_shader = To_String(
+~include version;
+
+out vec4 frag_color;
+
+void main()
+{
+	frag_color = vec4(1);
+}
+);
+
+const std::string copy_tex_frg_shader = To_String(
+~include version;
+uniform sampler2D main_tex;
+
+in vec2 vtx_uv;
+
+out vec4 frag_color;
+
+void main()
+{
+	frag_color = texture(main_tex, vtx_uv);
+}
+);
+
+const std::string apply_source_frg_shader = To_String(
+~include version;
+
+uniform vec4 src_xyr;
+uniform vec3 src_val;
+
+in vec2 vtx_uv;
+
+out vec4 frag_out;
+
+void main()
+{
+	vec2 dxyn = (vtx_uv - src_xyr.xy) / src_xyr.zw;
+
+	if (dot(dxyn, dxyn) < 1)
+	{
+		frag_out = vec4(src_val, 1);
+	}
+	else
+	{
+		discard;
+	}
+}
+);
+
+const std::string advection_frg_shader = To_String(
+~include version;
+
+uniform sampler2D u;
+uniform sampler2D val;
+uniform float dt;
+
+in vec2 vtx_uv;
+
+out vec4 frag_out;
+
+void main()
+{
+	vec2 u_xy = texture(u, vtx_uv).xy;
+	vec2 u_half = texture(u, vtx_uv - u_xy * (dt / 2.0f)).xy;
+	vec2 source = vtx_uv - u_half * dt;
+
+	if (any(lessThan(source, vec2(0))) || any(greaterThan(source, vec2(1))))
+	{
+		frag_out = vec4(0);
+	}
+	else
+	{
+		frag_out = texture(val, source);
+	}
+}
+);
+
+const std::string calc_div_u_frg_shader = To_String(
+~include version;
+
+uniform sampler2D u;
+uniform float dx;
+
+in vec2 vtx_uv;
+
+out float frag_div_u;
+
+void main()
+{
+	vec2 uL = textureOffset(u, vtx_uv, ivec2(-1, 0)).xy;
+	vec2 uR = textureOffset(u, vtx_uv, ivec2(1, 0)).xy;
+	vec2 uB = textureOffset(u, vtx_uv, ivec2(0, -1)).xy;
+	vec2 uT = textureOffset(u, vtx_uv, ivec2(0, 1)).xy;
+
+	vec2 div_u = vec2(uR.x - uL.x, uT.y - uB.y) / vec2(2 * dx);
+
+	frag_div_u = div_u.x + div_u.y;
+}
+);
+
+const std::string poisson_iter_frg_shader = To_String(
+~include version;
+
+uniform sampler2D p;
+uniform sampler2D div_u;
+uniform float dx;
+
+in vec2 vtx_uv;
+
+out float frag_p;
+
+void main()
+{
+	float pL = textureOffset(p, vtx_uv, ivec2(-1, 0)).x;
+	float pR = textureOffset(p, vtx_uv, ivec2(1, 0)).x;
+	float pB = textureOffset(p, vtx_uv, ivec2(0, -1)).x;
+	float pT = textureOffset(p, vtx_uv, ivec2(0, 1)).x;
+
+	frag_p = (-texture(div_u, vtx_uv).x * dx * dx + pL + pR + pB + pT) / 4.0f;
+}
+);
+
+const std::string p_correct_u_frg_shader = To_String(
+~include version;
+
+uniform sampler2D u;
+uniform sampler2D p;
+uniform float dx;
+
+in vec2 vtx_uv;
+
+out vec4 frag_u;
+
+void main()
+{
+	float pL = textureOffset(p, vtx_uv, ivec2(-1, 0)).x;
+	float pR = textureOffset(p, vtx_uv, ivec2(1, 0)).x;
+	float pB = textureOffset(p, vtx_uv, ivec2(0, -1)).x;
+	float pT = textureOffset(p, vtx_uv, ivec2(0, 1)).x;
+
+	vec2 grad_p = vec2(pR - pL, pT - pB) / vec2(2 * dx);
+
+	frag_u = texture(u, vtx_uv) - vec4(grad_p, vec2(0));
+}
+);
+
+const std::string calc_vor_frg_shader = To_String(
+~include version;
+
+uniform sampler2D u;
+uniform float dx;
+
+in vec2 vtx_uv;
+
+out vec4 frag_vor;
+
+void main()
+{
+	float uL = textureOffset(u, vtx_uv, ivec2(-1, 0)).y;
+	float uR = textureOffset(u, vtx_uv, ivec2(1, 0)).y;
+	float uB = textureOffset(u, vtx_uv, ivec2(0, -1)).x;
+	float uT = textureOffset(u, vtx_uv, ivec2(0, 1)).x;
+
+	frag_vor = vec4((uR - uL + uT - uB) / (2 * dx));
+}
+);
+
+const std::string vor_conf_frg_shader = To_String(
+~include version;
+
+uniform sampler2D u;
+uniform sampler2D vor;
+uniform float dx;
+uniform float dt;
+uniform float vor_conf_coeff;
+
+in vec2 vtx_uv;
+
+out vec4 frag_u;
+
+void main()
+{
+	float vL = textureOffset(vor, vtx_uv, ivec2(-1, 0)).x;
+	float vR = textureOffset(vor, vtx_uv, ivec2(1, 0)).x;
+	float vB = textureOffset(vor, vtx_uv, ivec2(0, -1)).x;
+	float vT = textureOffset(vor, vtx_uv, ivec2(0, 1)).x;
+
+	vec3 grad_v = vec3(vR - vL, vT - vB, 0) / vec3(2 * dx);
+	float len_v = length(grad_v);
+
+	if (len_v < 1e-3)
+	{
+		frag_u = texture(u, vtx_uv);
+	}
+	else
+	{
+		vec3 grad_v_norm = grad_v / len_v;
+
+		vec3 f = vor_conf_coeff * dx * cross(grad_v_norm, vec3(0, 0, texture(vor, vtx_uv).x));
+
+		frag_u = texture(u, vtx_uv) + vec4(f.xy * dt, 0, 0);
+	}
+}
+);
+}
 
 using namespace OpenGLShaders;
 
@@ -362,7 +681,7 @@ bool OpenGLShaderProgram::Compile()
 	if(vtx_compile_status!=GL_TRUE){
 		char log[2048];int log_length;
 		glGetShaderInfoLog(vtx_id,2048,(GLsizei*)&log_length,log);
-		std::cerr<<"Error: [OpenGLShaderProgram] vertex shader compile error: "<<log<<std::endl;
+		std::cerr<<"Error: [OpenGLShaderProgram] "<<name<<" vertex shader compile error: "<<log<<std::endl;
 		glDeleteShader(vtx_id);
 		return false;}
 
@@ -376,7 +695,7 @@ bool OpenGLShaderProgram::Compile()
 	if(frg_compile_status!=GL_TRUE){
 		char log[2048];int log_length;
 		glGetShaderInfoLog(frg_id,2048,(GLsizei*)&log_length,log);
-		std::cerr<<"Error: [OpenGLShaderProgram] fragment shader compile error: "<<log<<std::endl;
+		std::cerr<<"Error: [OpenGLShaderProgram] "<<name<<" fragment shader compile error: "<<log<<std::endl;
 		glDeleteShader(frg_id);
 		return false;}
 
@@ -395,7 +714,7 @@ bool OpenGLShaderProgram::Compile()
 		if(geo_compile_status!=GL_TRUE){
 			char log[2048];int log_length;
 			glGetShaderInfoLog(geo_id,2048,(GLsizei*)&log_length,log);
-			std::cerr<<"Error: [OpenGLShaderProgram] geometry shader compile error: "<<log<<std::endl;
+			std::cerr<<"Error: [OpenGLShaderProgram] "<<name<<" geometry shader compile error: "<<log<<std::endl;
 			glDeleteShader(geo_id);
 			return false;}
 
@@ -441,10 +760,26 @@ void OpenGLShaderLibrary::Initialize_Shaders()
 	Add_Shader(vpos_model_vtx_shader,ucolor_frg_shader,"vpos_model");
 
 	Add_Shader(vcolor_vtx_shader,vcolor_frg_shader,"vcolor");
+	Add_Shader(vcolor_tex_vtx_shader,vcolor_tex_frg_shader,"vcolor_tex");
 	Add_Shader(psize_vtx_shader,ucolor_frg_shader,"psize_ucolor");
 	Add_Shader(vnormal_vfpos_vtx_shader,vnormal_vfpos_lt_frg_shader,"vnormal_lt");
+	Add_Shader(vnormal_vfpos_tex_vtx_shader,vnormal_vfpos_lt_tex_frg_shader,"vnormal_lt_tex");
 	Add_Shader(vclip_vfpos_vtx_shader,gcolor_frg_shader,"gcolor_bk");
 	Add_Shader(vpos_model_vnormal_vfpos_vtx_shader,vnormal_vfpos_dl_fast_frg_shader,"vpos_model_vnormal_dl_fast");
+
+	Add_Shader(vuv_vtx_shader, zero_tex_frg_shader, "zero_tex");
+	Add_Shader(vuv_vtx_shader, one_tex_frg_shader, "one_tex");
+	Add_Shader(vuv_vtx_shader, copy_tex_frg_shader, "copy_tex");
+
+	Add_Shader(vuv_vtx_shader, apply_source_frg_shader, "gf_apply_source");
+	Add_Shader(vuv_vtx_shader, advection_frg_shader, "gf_advect");
+	Add_Shader(vuv_vtx_shader, calc_div_u_frg_shader, "gf_calc_div_u");
+	Add_Shader(vuv_vtx_shader, poisson_iter_frg_shader, "gf_poisson_iter");
+	Add_Shader(vuv_vtx_shader, p_correct_u_frg_shader, "gf_p_correct_u");
+	Add_Shader(vuv_vtx_shader, calc_vor_frg_shader, "gf_calc_vor");
+	Add_Shader(vuv_vtx_shader, vor_conf_frg_shader, "gf_vor_conf");
+
+	Add_Shader(vcolor_tex_vtx_shader,u_tex_frg_shader,"u_tex");
 }
 
 void OpenGLShaderLibrary::Initialize_Headers()

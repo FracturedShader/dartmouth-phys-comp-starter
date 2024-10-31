@@ -203,6 +203,108 @@ class OpenGLTriangleMesh : public OpenGLMesh<TriangleMesh<3> >
     }
 };
 
+class OpenGLTexturedTriangleMesh : public OpenGLTriangleMesh
+{public:typedef OpenGLTriangleMesh Base;
+	GLuint main_tex;
+	std::vector<Vector2> tex_coords;
+	std::shared_ptr<OpenGLShaderProgram> custom_shader;
+
+	OpenGLTexturedTriangleMesh()
+	{
+		name = "textured_triangle_mesh";
+		shading_mode = ShadingMode::None;
+		color = OpenGLColor::White();
+	}
+
+	void Initialize() override
+	{
+		Base::Initialize();
+
+		shader_programs.clear();
+
+		Add_Shader_Program(OpenGLShaderLibrary::Get_Shader("vcolor_tex"));
+		Add_Shader_Program(OpenGLShaderLibrary::Get_Shader("vnormal_lt_tex"));
+	}
+
+	void Update_Data_To_Render() override
+	{
+		if(!Update_Data_To_Render_Pre())return;
+		Update_Polygon_Mode();
+
+		use_vtx_tex = true;
+
+		switch(shading_mode){
+		case ShadingMode::None:
+		{use_vtx_color=true;use_vtx_normal=false;}break;
+		case ShadingMode::Lighting:
+		{use_vtx_color=false;use_vtx_normal=true;}break;}
+
+		std::vector<Vector3> normals;
+		if(use_vtx_normal&&(normals.size()<mesh.Vertices().size()||recomp_vtx_normal)){
+			Update_Normals(mesh,normals);}
+
+		GLuint stride_size=4+(use_vtx_color?4:0)+(use_vtx_normal?4:0)+(use_vtx_tex?2:0);
+		int i=0;for(auto& p:mesh.Vertices()){
+			OpenGL_Vertex4(p,opengl_vertices);	////position, 4 floats
+			if(use_vtx_color){
+				OpenGL_Color4(color.rgba,opengl_vertices);}		////color, 4 floats
+			if(use_vtx_normal){
+				OpenGL_Vertex4(normals[i],opengl_vertices);}	////normal, 4 floats
+			if(use_vtx_color){
+				OpenGL_Vertex(tex_coords[i], opengl_vertices); }		////color, 4 floats
+			i++;}
+		for(auto& e:mesh.elements)OpenGL_Vertex(e,opengl_elements);
+
+		Set_OpenGL_Vertices();
+		int idx=0;{Set_OpenGL_Vertex_Attribute(0,4,stride_size,0);idx++;}	////position
+		if(use_vtx_color){Set_OpenGL_Vertex_Attribute(idx,4,stride_size,idx*4);idx++;}	////color
+		if(use_vtx_normal){Set_OpenGL_Vertex_Attribute(idx,4,stride_size,idx*4);idx++;}	////normal
+		if(use_vtx_tex){Set_OpenGL_Vertex_Attribute(idx,2,stride_size,idx*4);idx++;}	////uv
+
+		Set_OpenGL_Elements();
+		Update_Data_To_Render_Post();
+	}
+
+	void Display() const override
+    {
+		using namespace OpenGLUbos;using namespace OpenGLFbos;
+		if(!visible||mesh.elements.empty())return;
+		Update_Polygon_Mode();
+
+		switch(shading_mode){
+		case ShadingMode::None:{
+			std::shared_ptr<OpenGLShaderProgram> shader=custom_shader?custom_shader:shader_programs[0];
+			shader->Begin();
+			DisplayCommon(shader);
+			shader->End();
+		}break;
+		case ShadingMode::Lighting:{
+			std::shared_ptr<OpenGLShaderProgram> shader=custom_shader?custom_shader:shader_programs[1];
+			shader->Begin();
+			if(use_mat)shader->Set_Uniform_Mat(&mat);
+			glEnable(GL_POLYGON_OFFSET_FILL);
+			glPolygonOffset(1.f,1.f);
+			Bind_Uniform_Block_To_Ubo(shader,"lights");
+			DisplayCommon(shader);
+            glDisable(GL_POLYGON_OFFSET_FILL);
+			shader->End();
+		}break;}
+    }
+
+private:
+	void DisplayCommon(std::shared_ptr<OpenGLShaderProgram>& shader) const
+	{
+		using namespace OpenGLUbos; using namespace OpenGLFbos;
+
+		Bind_Uniform_Block_To_Ubo(shader, "camera");
+
+		shader->Bind_Texture2D("main_tex", main_tex, 0);
+
+		glBindVertexArray(vao);
+		glDrawElements(GL_TRIANGLES, ele_size, GL_UNSIGNED_INT, 0);
+	}
+};
+
 class OpenGLColoredTriangleMesh : public OpenGLMesh<TriangleMesh<3> >
 {public:typedef OpenGLMesh<TriangleMesh<3> > Base;
 	std::vector<double> colors;
@@ -250,6 +352,38 @@ class OpenGLColoredTriangleMesh : public OpenGLMesh<TriangleMesh<3> >
 		glDrawArrays(GL_TRIANGLES,0,vtx_size/8);
         glLineWidth(old_line_width);
 		shader->End();}
+    }
+};
+
+class OpenGLUVMesh : public OpenGLMesh<TriangleMesh<3> >
+{public:typedef OpenGLMesh<TriangleMesh<3> > Base;
+    OpenGLUVMesh(){name="uv_mesh";shading_mode=ShadingMode::None;}
+
+	void Initialize() override
+    {
+		Base::Initialize();
+
+		mesh.Vertices().emplace_back(0, 0, 0);
+		mesh.Vertices().emplace_back(1, 0, 0);
+		mesh.Vertices().emplace_back(1, 1, 0);
+		mesh.Vertices().emplace_back(0, 1, 0);
+
+		mesh.Elements().emplace_back(0, 1, 2);
+
+		mesh.Elements().emplace_back(2, 3, 0);
+
+		data_refreshed = true;
+    }
+
+	void Display() const override
+    {
+		// Only intended for FBOs, never normal display
+    }
+
+	void DrawElements() const
+    {
+		glBindVertexArray(vao);
+		glDrawElements(GL_TRIANGLES,ele_size,GL_UNSIGNED_INT,0);
     }
 };
 

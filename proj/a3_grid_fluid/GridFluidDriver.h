@@ -14,6 +14,7 @@
 class GridFluidDriver : public Driver, public OpenGLViewer
 {using Base=Driver;
 	double dt=.02;
+	double t = 0;
 	GridFluid fluid;
 	double v_rescale=(double).05;
 	bool add_particle=false;
@@ -29,7 +30,99 @@ class GridFluidDriver : public Driver, public OpenGLViewer
 	bool draw_velocity=true;
 	bool draw_density=true;
 	bool draw_particles=true;
+	bool use_shaders=true;
 	//////////////////////////////////////////////////////////////////////////
+
+	GLuint px_width = 256;
+	GLuint px_height = px_width;
+	GLuint smoke_px_width = 2048;
+	GLuint smoke_px_height = smoke_px_width;
+	float px_dx = 1.0f / px_width;
+
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> boundary_mask_fbo;
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> u_fbos[2];
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> den_fbos[2];
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> div_u_fbo;
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> p_fbos[2];
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> vor_fbo;
+
+	std::shared_ptr<OpenGLShaderProgram> clear_shader;
+	std::shared_ptr<OpenGLShaderProgram> fill_shader;
+	std::shared_ptr<OpenGLShaderProgram> copy_shader;
+
+	std::shared_ptr<OpenGLShaderProgram> apply_source_shader;
+	std::shared_ptr<OpenGLShaderProgram> advect_shader;
+	std::shared_ptr<OpenGLShaderProgram> div_u_shader;
+	std::shared_ptr<OpenGLShaderProgram> poisson_iter_shader;
+	std::shared_ptr<OpenGLShaderProgram> p_correct_u_shader;
+	std::shared_ptr<OpenGLShaderProgram> calc_vor_shader;
+	std::shared_ptr<OpenGLShaderProgram> vor_conf_shader;
+
+	OpenGLUVMesh* uv_quad;
+	OpenGLTexturedTriangleMesh* smoke_mesh = nullptr;
+
+	static glm::vec3 HSVToRGB(double h, double s, double v)
+	{
+		const double c = v * s;
+		const double x = c * (1.0 - std::abs(fmod(h / 60.0, 2.0) - 1.0));
+		const double m = v - c;
+
+		const int base_idx = static_cast<int>(h / 120.0);
+		const int shift = static_cast<int>(h / 60) % 2;
+
+		glm::vec3 rgb{m, m, m};
+
+		rgb[(base_idx + shift) % 3] += static_cast<float>(c);
+		rgb[(base_idx + 1 - shift) % 3] += static_cast<float>(x);
+
+		return rgb;
+	}
+
+	std::shared_ptr<OpenGLFbos::OpenGLFbo> CreatePosFbo(const std::string& name)
+	{
+		auto fbo = OpenGLFbos::Get_Fbo(name, 2);
+
+		fbo->Resize(px_width, px_height);
+
+		return fbo;
+	}
+
+	void RenderToFBO(std::shared_ptr<OpenGLFbos::OpenGLFbo>& fbo, std::function<void()> render_fn)
+	{
+		glViewport(0, 0, fbo->width, fbo->height);
+		fbo->Bind();
+
+		render_fn();
+
+		fbo->Unbind();
+		glViewport(0, 0, opengl_window->win_w, opengl_window->win_h);
+	}
+
+	void RenderToFBONoDepth(std::shared_ptr<OpenGLFbos::OpenGLFbo>& fbo, std::function<void()> render_fn)
+	{
+		RenderToFBO(fbo, [&]()
+			{
+				glDisable(GL_DEPTH_TEST);
+				render_fn();
+				glEnable(GL_DEPTH_TEST);
+			});
+	}
+
+	void RenderToFBONoDepthNoBounds(std::shared_ptr<OpenGLFbos::OpenGLFbo>& fbo, std::function<void()> render_fn)
+	{
+		RenderToFBONoDepth(fbo, [&]()
+			{
+				glEnable(GL_SCISSOR_TEST);
+				glScissor(1, 1, fbo->width - 2, fbo->height - 2);
+				render_fn();
+				glDisable(GL_SCISSOR_TEST);
+			});
+	}
+
+	Vector2 ToFluidUV(const Vector2& world_pos)
+	{
+		return { world_pos[0] / 2, world_pos[1] };
+	}
 
 public:
 	virtual void Initialize()
@@ -59,10 +152,11 @@ public:
 		opengl_vectors->Initialize();
 
 		////initialize polygon
+		double width = use_shaders ? 1 : 2;
 		opengl_polygon=Add_Interactive_Object<OpenGLPolygon>();
 		opengl_polygon->vtx.push_back(Vector3::Zero());
-		opengl_polygon->vtx.push_back(Vector3::Unit(0)*(double)2);
-		opengl_polygon->vtx.push_back(Vector3::Unit(0)*(double)2+Vector3::Unit(1)*(double)1);
+		opengl_polygon->vtx.push_back(Vector3::Unit(0)*width);
+		opengl_polygon->vtx.push_back(Vector3::Unit(0)*width+Vector3::Unit(1)*(double)1);
 		opengl_polygon->vtx.push_back(Vector3::Unit(1)*(double)1);
 		Set_Color(opengl_polygon,OpenGLColor(.0,1.,1.,1.));
 		Set_Line_Width(opengl_polygon,4.f);
@@ -99,6 +193,255 @@ public:
 		
 		opengl_mesh->Set_Data_Refreshed();
 		opengl_mesh->Initialize();
+
+		boundary_mask_fbo = OpenGLFbos::Get_Fbo("fluid_boundary");
+		boundary_mask_fbo->Resize(px_width, px_height);
+
+		den_fbos[0] = OpenGLFbos::Get_Fbo("den_fbo_0");
+		den_fbos[1] = OpenGLFbos::Get_Fbo("den_fbo_1");
+
+		den_fbos[0]->Resize(smoke_px_width, smoke_px_height);
+		den_fbos[1]->Resize(smoke_px_width, smoke_px_height);
+
+		u_fbos[0] = CreatePosFbo("u_fbo_0");
+		u_fbos[1] = CreatePosFbo("u_fbo_1");
+		div_u_fbo = CreatePosFbo("div_u_fbo");
+		p_fbos[0] = CreatePosFbo("p_fbo_0");
+		p_fbos[1] = CreatePosFbo("p_fbo_1");
+		vor_fbo = CreatePosFbo("vor_fbo");
+
+		clear_shader = OpenGLShaderLibrary::Get_Shader("zero_tex");
+		fill_shader = OpenGLShaderLibrary::Get_Shader("one_tex");
+		copy_shader = OpenGLShaderLibrary::Get_Shader("copy_tex");
+
+		apply_source_shader = OpenGLShaderLibrary::Get_Shader("gf_apply_source");
+		advect_shader = OpenGLShaderLibrary::Get_Shader("gf_advect");
+		div_u_shader = OpenGLShaderLibrary::Get_Shader("gf_calc_div_u");
+		poisson_iter_shader = OpenGLShaderLibrary::Get_Shader("gf_poisson_iter");
+		p_correct_u_shader = OpenGLShaderLibrary::Get_Shader("gf_p_correct_u");
+		calc_vor_shader = OpenGLShaderLibrary::Get_Shader("gf_calc_vor");
+		vor_conf_shader = OpenGLShaderLibrary::Get_Shader("gf_vor_conf");
+
+		uv_quad = Add_Object<OpenGLUVMesh>();
+		uv_quad->Update_Data_To_Render();
+
+		smoke_mesh = Add_Object<OpenGLTexturedTriangleMesh>(false);
+
+		smoke_mesh->mesh.Vertices().emplace_back(0, 0, 0);
+		smoke_mesh->tex_coords.emplace_back(0, 0);
+		smoke_mesh->mesh.Vertices().emplace_back(1, 0, 0);
+		smoke_mesh->tex_coords.emplace_back(1, 0);
+		smoke_mesh->mesh.Vertices().emplace_back(1, 1, 0);
+		smoke_mesh->tex_coords.emplace_back(1, 1);
+		smoke_mesh->mesh.Vertices().emplace_back(0, 1, 0);
+		smoke_mesh->tex_coords.emplace_back(0, 1);
+
+		smoke_mesh->mesh.Elements().emplace_back(0, 1, 2);
+
+		smoke_mesh->mesh.Elements().emplace_back(2, 3, 0);
+
+		smoke_mesh->main_tex = den_fbos[0]->tex_index;
+
+		smoke_mesh->Set_Data_Refreshed();
+		smoke_mesh->Initialize();
+
+		RenderToFBONoDepth(boundary_mask_fbo, [&]()
+			{
+				fill_shader->Begin();
+				uv_quad->DrawElements();
+				fill_shader->End();
+
+				glEnable(GL_SCISSOR_TEST);
+				glScissor(1, 1, px_width - 2, px_height - 2);
+
+				clear_shader->Begin();
+				uv_quad->DrawElements();
+				clear_shader->End();
+
+				glDisable(GL_SCISSOR_TEST);
+			});
+
+		if (use_shaders)
+		{
+			opengl_vectors->visible = false;
+			opengl_vectors->Set_Data_Refreshed();
+			
+			opengl_mesh->visible = false;
+			opengl_mesh->Set_Data_Refreshed();
+
+			draw_particles = false;
+			draw_velocity = false;
+		}
+		else
+		{
+			smoke_mesh->visible = false;
+		}
+	}
+
+	void ApplySource()
+	{
+		RenderToFBONoDepthNoBounds(u_fbos[0], [&]()
+			{
+				apply_source_shader->Begin();
+				apply_source_shader->Set_Uniform("src_xyr", glm::vec4(fluid.src_pos[0], fluid.src_pos[1], fluid.src_radius, fluid.src_radius));
+				apply_source_shader->Set_Uniform("src_val", glm::vec3(0.25, 0, 0));
+
+				uv_quad->DrawElements();
+
+				apply_source_shader->End();
+			});
+
+		RenderToFBONoDepthNoBounds(den_fbos[0], [&]()
+			{
+				apply_source_shader->Begin();
+				apply_source_shader->Set_Uniform("src_xyr", glm::vec4(fluid.src_pos[0], fluid.src_pos[1], fluid.src_radius, fluid.src_radius));
+				apply_source_shader->Set_Uniform("src_val", HSVToRGB(fmod(t * 36, 360), 1, 1));
+
+				uv_quad->DrawElements();
+
+				apply_source_shader->End();
+			});
+	}
+
+	void Advect()
+	{
+		RenderToFBONoDepth(u_fbos[1], [&]()
+			{
+				advect_shader->Begin();
+				advect_shader->Bind_Texture2D("u", u_fbos[0]->tex_index, 0);
+				advect_shader->Set_Uniform("val", 0);
+				advect_shader->Set_Uniform("dt", static_cast<GLfloat>(dt));
+
+				uv_quad->DrawElements();
+
+				advect_shader->End();
+			});
+
+		RenderToFBONoDepth(den_fbos[1], [&]()
+			{
+				advect_shader->Begin();
+				advect_shader->Bind_Texture2D("u", u_fbos[0]->tex_index, 0);
+				advect_shader->Bind_Texture2D("val", den_fbos[0]->tex_index, 1);
+				advect_shader->Set_Uniform("dt", static_cast<GLfloat>(dt));
+
+				uv_quad->DrawElements();
+
+				advect_shader->End();
+			});
+
+		RenderToFBONoDepth(u_fbos[0], [&]()
+			{
+				copy_shader->Begin();
+				copy_shader->Bind_Texture2D("main_tex", u_fbos[1]->tex_index, 0);
+
+				uv_quad->DrawElements();
+
+				copy_shader->End();
+			});
+
+		RenderToFBONoDepth(den_fbos[0], [&]()
+			{
+				copy_shader->Begin();
+				copy_shader->Bind_Texture2D("main_tex", den_fbos[1]->tex_index, 0);
+
+				uv_quad->DrawElements();
+
+				copy_shader->End();
+			});
+	}
+
+	void ConfineVortices()
+	{
+		RenderToFBONoDepthNoBounds(vor_fbo, [&]()
+			{
+				calc_vor_shader->Begin();
+				calc_vor_shader->Bind_Texture2D("u", u_fbos[1]->tex_index, 0);
+				calc_vor_shader->Set_Uniform("dx", px_dx);
+
+				uv_quad->DrawElements();
+
+				calc_vor_shader->End();
+			});
+
+		RenderToFBONoDepthNoBounds(u_fbos[0], [&]()
+			{
+				vor_conf_shader->Begin();
+				vor_conf_shader->Bind_Texture2D("u", u_fbos[1]->tex_index, 0);
+				vor_conf_shader->Bind_Texture2D("vor", vor_fbo->tex_index, 1);
+				vor_conf_shader->Set_Uniform("dx", px_dx);
+				vor_conf_shader->Set_Uniform("dt", static_cast<GLfloat>(dt));
+				vor_conf_shader->Set_Uniform("vor_conf_coeff", 2.0f);
+
+				uv_quad->DrawElements();
+
+				vor_conf_shader->End();
+			});
+	}
+
+	void Project()
+	{
+		// Ignore bounds for all operations
+		// calc div_u from u0
+		// 40 iterations of poisson solving
+		// Correct velocity
+
+		RenderToFBONoDepthNoBounds(div_u_fbo, [&]()
+			{
+				div_u_shader->Begin();
+				div_u_shader->Bind_Texture2D("u", u_fbos[0]->tex_index, 0);
+				div_u_shader->Set_Uniform("dx", px_dx);
+
+				uv_quad->DrawElements();
+
+				div_u_shader->End();
+			});
+
+		RenderToFBONoDepth(p_fbos[0], [&]()
+			{
+				clear_shader->Begin();
+				uv_quad->DrawElements();
+				clear_shader->End();
+			});
+
+		for (int i = 0; i < 40; ++i)
+		{
+			int si = i % 2;
+			int di = (i + 1) % 2;
+
+			RenderToFBONoDepth(p_fbos[di], [&]()
+				{
+					poisson_iter_shader->Begin();
+					poisson_iter_shader->Bind_Texture2D("p", p_fbos[si]->tex_index, 0);
+					poisson_iter_shader->Bind_Texture2D("div_u", div_u_fbo->tex_index, 1);
+					poisson_iter_shader->Set_Uniform("dx", px_dx);
+
+					uv_quad->DrawElements();
+
+					poisson_iter_shader->End();
+				});
+		}
+
+		RenderToFBONoDepth(u_fbos[1], [&]()
+			{
+				p_correct_u_shader->Begin();
+				p_correct_u_shader->Bind_Texture2D("u", u_fbos[0]->tex_index, 0);
+				p_correct_u_shader->Bind_Texture2D("p", p_fbos[0]->tex_index, 1);
+				p_correct_u_shader->Set_Uniform("dx", px_dx);
+
+				uv_quad->DrawElements();
+
+				p_correct_u_shader->End();
+			});
+
+		RenderToFBONoDepth(u_fbos[0], [&]()
+			{
+				copy_shader->Begin();
+				copy_shader->Bind_Texture2D("main_tex", u_fbos[1]->tex_index, 0);
+
+				uv_quad->DrawElements();
+
+				copy_shader->End();
+			});
 	}
 
 	////synchronize simulation data to visualization data
@@ -166,8 +509,21 @@ public:
 	////update simulation and visualization for each time step
 	virtual void Toggle_Next_Frame()
 	{
-		fluid.Advance(dt);
-		Sync_Simulation_And_Visualization_Data();
+		t += dt;
+
+		if (use_shaders)
+		{
+			ApplySource();
+			Advect();
+			ConfineVortices();
+			Project();
+		}
+		else
+		{
+			fluid.Advance(dt);
+			Sync_Simulation_And_Visualization_Data();
+		}
+
 		OpenGLViewer::Toggle_Next_Frame();
 	}
 
@@ -184,7 +540,7 @@ public:
 		Vector3f pos=opengl_window->Unproject(Vector3f((float)x,(float)y,win_pos[2]));
 		Vector2 p_pos;for(int i=0;i<2;i++)p_pos[i]=(double)pos[i];
 		fluid.src_pos=p_pos;
-		Add_Source_Particle(p_pos);
+		if (!use_shaders) { Add_Source_Particle(p_pos); }
 		return true;
 	}
 
@@ -200,7 +556,7 @@ public:
 		Vector3f pos=opengl_window->Unproject(Vector3f((float)x,(float)y,win_pos[2]));
 		Vector2 p_pos;for(int i=0;i<2;i++)p_pos[i]=(double)pos[i];
 		fluid.src_pos=p_pos;
-		Add_Source_Particle(p_pos);
+		if (!use_shaders) { Add_Source_Particle(p_pos); }
 		add_particle=true;
 		return true;
 	}
@@ -210,13 +566,18 @@ public:
 	{
 		OpenGLViewer::Initialize_Common_Callback_Keys();
 		Bind_Callback_Key('v',&Keyboard_Event_V_Func,"press v");
-		Bind_Callback_Key('2',&Keyboard_Event_V_Func,"press 2");
+		Bind_Callback_Key('2',&Keyboard_Event_D_Func,"press 2");
 	}
 
 	virtual void Keyboard_Event_V()
 	{
 		draw_velocity=!draw_velocity;
-		opengl_vectors->visible=!opengl_vectors->visible;
+		if (use_shaders)
+		{
+			smoke_mesh->main_tex = draw_velocity ? u_fbos[0]->tex_index : den_fbos[0]->tex_index;
+			return;
+		}
+		opengl_vectors->visible = draw_velocity;;
 		opengl_vectors->Set_Data_Refreshed();
 	}
 	Define_Function_Object(GridFluidDriver,Keyboard_Event_V);
@@ -224,7 +585,11 @@ public:
 	virtual void Keyboard_Event_D()
 	{
 		draw_density=!draw_density;
-		opengl_mesh->visible=!opengl_mesh->visible;
+		if (use_shaders)
+		{
+			return;
+		}
+		opengl_mesh->visible = draw_density;
 		opengl_mesh->Set_Data_Refreshed();
 	}
 	Define_Function_Object(GridFluidDriver,Keyboard_Event_D);
