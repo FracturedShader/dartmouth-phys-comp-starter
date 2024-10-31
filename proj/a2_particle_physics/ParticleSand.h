@@ -41,7 +41,7 @@ public:
 		Particle_My_Object_Collision_Detection_And_Response();
 
 		for(int i=0;i<particles.Size();i++){
-			particles.V(i)+=particles.F(i)/particles.M(i)*dt;
+			particles.V(i)+=particles.F(i)*(dt/particles.M(i));
 			particles.X(i)+=particles.V(i)*dt;}
 	}
 
@@ -53,6 +53,21 @@ public:
 	{
 		particle_environment_collision_pairs.clear();
 		/* Your implementation start */
+		const int n_parts = particles.Size();
+		const int n_env = static_cast<int>(env_objects.size());
+
+		for (int i = 0; i < n_parts; ++i)
+		{
+			for (int j = 0; j < n_env; ++j)
+			{
+				const double phi = env_objects[j]->Phi(particles.X(i));
+
+				if ((phi - particles.R(i)) < 0)
+				{
+					particle_environment_collision_pairs.emplace_back(i, j);
+				}
+			}
+		}
 		/* Your implementation end */
 	}
 		
@@ -67,6 +82,12 @@ public:
 			VectorD collision_force=VectorD::Zero();
 
 			/* Your implementation start */
+			const auto* const env_obj = env_objects[j];
+			VectorD xi = particles.X(i);
+			VectorD norm = env_obj->Normal(xi);
+
+			collision_force += (ks * (env_obj->Phi(xi) - particles.R(i)) + kd * particles.V(i).dot(norm)) * -norm;
+
 			/* Your implementation end */
 			
 			particles.F(i)+=collision_force;
@@ -80,6 +101,24 @@ public:
 	{
 		particle_particle_collision_pairs.clear();
 		/* Your implementation start */
+		const int n_parts = particles.Size();
+
+		for (int i = 0; i < n_parts; ++i)
+		{
+			const VectorD ci = particles.X(i);
+			const double ri = particles.R(i);
+
+			for (int j = i + 1; j < n_parts; ++j)
+			{
+				const double dx = (ci - particles.X(j)).norm();
+				const double min_d = ri + particles.R(j);
+
+				if (dx < min_d)
+				{
+					particle_particle_collision_pairs.emplace_back(i, j);
+				}
+			}
+		}
 		/* Your implementation end */
 	}
 
@@ -91,9 +130,18 @@ public:
 		for(int pair_idx=0;pair_idx<particle_particle_collision_pairs.size();pair_idx++){
 			int i=particle_particle_collision_pairs[pair_idx][0];	////the first particle index in the pair
 			int j=particle_particle_collision_pairs[pair_idx][1];	////the second particle index in the pair
-			VectorD collision_force=VectorD::Zero();
 
 			/* Your implementation start */
+			const VectorD dx = particles.X(j) - particles.X(i);
+			const double dxn = dx.norm();
+			const double min_x = particles.R(i) + particles.R(j);
+			const VectorD norm = dx / dxn;
+
+			const VectorD collision_force = (ks * (dxn - min_x) + kd * (particles.V(j) - particles.V(i)).dot(norm)) * norm;
+
+			particles.F(i) += collision_force;
+			particles.F(j) -= collision_force;
+
 			/* Your implementation end */
 		}
 

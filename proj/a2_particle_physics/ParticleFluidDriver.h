@@ -25,12 +25,12 @@ public:
 	virtual void Initialize()
 	{
 		////driver initialization, initialize simulation data
-		double dx=.35;int nx=20;int ny=20;
+		double dx=.35;int nx=60;int ny=60;
 		for(int i=0;i<nx;i++){for(int j=0;j<ny;j++){
 			VectorD pos;pos[0]=(double)i*dx-1.;pos[1]=(double)j*dx+3.;
 			Add_Particle(pos);}}
 
-		bowl=new Bowl<d>(VectorD::Unit(1)*8,8);
+		bowl=new Bowl<d>(VectorD::Unit(1)*8,28);
 		fluid.env_objects.push_back(bowl);
 
 		fluid.Initialize();
